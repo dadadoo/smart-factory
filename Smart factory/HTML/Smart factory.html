@@ -169,6 +169,31 @@
   .poll-select{font-family:var(--mono);font-size:11px;background:var(--bg3);color:var(--text2);border:1px solid var(--border2);border-radius:6px;padding:5px 7px;cursor:pointer;-webkit-appearance:none;}
   .poll-select:focus{outline:none;border-color:var(--accent);}
 
+  /* KPI PANEL */
+  .kpi-panel{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;}
+  .kpi-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px;}
+  .kpi-title{font-size:10px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.07em;}
+  .kpi-updated{font-size:10px;color:var(--text3);font-family:var(--mono);}
+  .kpi-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px;}
+  .kpi-card{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;text-align:center;}
+  .kpi-label{font-size:9px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
+  .kpi-val{font-size:18px;font-weight:600;font-family:var(--mono);}
+  .kpi-val.good{color:var(--green);}.kpi-val.mid{color:var(--yellow);}.kpi-val.bad{color:var(--red);}
+  .kpi-sub{font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:2px;}
+  .kpi-oee-bar{background:var(--bg4);border-radius:3px;height:6px;margin-top:5px;overflow:hidden;}
+  .kpi-oee-fill{height:100%;border-radius:3px;transition:width .5s ease;}
+  .kpi-table-wrap{overflow-x:auto;}
+  .kpi-table{width:100%;border-collapse:collapse;font-size:11px;min-width:460px;}
+  .kpi-table thead th{text-align:left;padding:4px 7px;font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);white-space:nowrap;}
+  .kpi-table tbody td{padding:4px 7px;border-bottom:1px solid rgba(99,130,180,.07);color:var(--text2);font-family:var(--mono);font-size:10px;white-space:nowrap;}
+  .kpi-table tbody tr:hover td{background:var(--bg4);}
+  .kpi-table tbody tr:last-child td{border-bottom:none;}
+  .kpi-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px;vertical-align:middle;}
+  @media(min-width:768px){
+    .kpi-summary{grid-template-columns:repeat(6,1fr);gap:10px;}
+    .kpi-val{font-size:20px;}
+  }
+
   /* MOBILE narrow — hide some text */
   @media(max-width:479px){
     .hd-sub{display:none;}
@@ -232,7 +257,54 @@
       <option value="2000" selected>2초</option>
       <option value="5000">5초</option>
     </select>
+    <div class="ctrl-sep"></div>
+    <button class="btn" onclick="exportCsv()">
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span class="btn-lbl">CSV 내보내기</span>
+    </button>
     <div class="round-info">라운드 <span id="round-num">0</span> · <span id="mode-label">SIM</span></div>
+  </div>
+
+  <!-- KPI 대시보드 -->
+  <div class="kpi-panel" id="kpi-panel">
+    <div class="kpi-header">
+      <div class="kpi-title">KPI 지표 — OEE · MTBF · MTTR</div>
+      <div class="kpi-updated" id="kpi-updated">--</div>
+    </div>
+    <div class="kpi-summary">
+      <div class="kpi-card">
+        <div class="kpi-label">공장 OEE</div>
+        <div class="kpi-val" id="kpi-oee">--%</div>
+        <div class="kpi-oee-bar"><div class="kpi-oee-fill" id="kpi-oee-bar" style="width:0%;background:var(--green)"></div></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">가동률</div>
+        <div class="kpi-val" id="kpi-avail">--%</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">성능률</div>
+        <div class="kpi-val" id="kpi-perf">--%</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">품질률</div>
+        <div class="kpi-val" id="kpi-qual">--%</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">MTBF</div>
+        <div class="kpi-val" id="kpi-mtbf">-- <span style="font-size:11px;font-weight:400">분</span></div>
+        <div class="kpi-sub">평균 고장 간격</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">MTTR</div>
+        <div class="kpi-val" id="kpi-mttr">-- <span style="font-size:11px;font-weight:400">분</span></div>
+        <div class="kpi-sub">평균 복구 시간</div>
+      </div>
+    </div>
+    <div class="kpi-table-wrap">
+      <table class="kpi-table">
+        <thead><tr><th>설비</th><th>OEE</th><th>가동률</th><th>성능률</th><th>품질률</th><th>고장횟수</th><th>MTBF(분)</th><th>MTTR(분)</th></tr></thead>
+        <tbody id="kpi-tbody"><tr><td colspan="8" class="empty-state">데이터 수집 후 표시됩니다</td></tr></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="eq-grid" id="eq-grid"></div>
@@ -283,7 +355,7 @@ const Config = {
   API_BASE:         'http://localhost:8080/api',
   API_TIMEOUT_MS:   3000,   // fetch 타임아웃
   HEALTH_CHECK_MS:  10000,  // SIM 모드에서 API 복구 감지 주기
-  ANOMALY_CHANCE:   0.20,
+  ANOMALY_CHANCE:   0.01,
   CRITICAL_CHANCE:  0.08,
   COLLECT_INTERVAL: 1500,
   MAX_HIST:  20,
@@ -609,6 +681,47 @@ const UI = {
     this.renderAll();
   },
 
+  renderKpi(data) {
+    const s   = data.summary || {};
+    const pct = v => v != null ? v.toFixed(1) + '%' : '--';
+    const min = v => v != null ? v.toFixed(0) : '--';
+
+    const oee = s.factoryOee != null ? s.factoryOee : null;
+    const oeeCls = oee == null ? '' : oee >= 85 ? 'good' : oee >= 60 ? 'mid' : 'bad';
+    const oeeBarColor = oee == null ? 'var(--green)' : oee >= 85 ? 'var(--green)' : oee >= 60 ? 'var(--yellow)' : 'var(--red)';
+
+    document.getElementById('kpi-oee').className   = 'kpi-val ' + oeeCls;
+    document.getElementById('kpi-oee').textContent = oee != null ? oee.toFixed(1) + '%' : '--%';
+    document.getElementById('kpi-oee-bar').style.width       = (oee || 0) + '%';
+    document.getElementById('kpi-oee-bar').style.background  = oeeBarColor;
+    document.getElementById('kpi-avail').textContent = pct(s.availability);
+    document.getElementById('kpi-perf').textContent  = pct(s.performance);
+    document.getElementById('kpi-qual').textContent  = pct(s.quality);
+    document.getElementById('kpi-mtbf').innerHTML    = min(s.mtbfMin) + ' <span style="font-size:11px;font-weight:400">분</span>';
+    document.getElementById('kpi-mttr').innerHTML    = min(s.mttrMin) + ' <span style="font-size:11px;font-weight:400">분</span>';
+    document.getElementById('kpi-updated').textContent = this.now();
+
+    const tbody = document.getElementById('kpi-tbody');
+    const eqs   = data.equipments || [];
+    if (!eqs.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">데이터 수집 후 표시됩니다</td></tr>';
+      return;
+    }
+    const dotColor = v => v == null ? '#4a6080' : v >= 85 ? 'var(--green)' : v >= 60 ? 'var(--yellow)' : 'var(--red)';
+    tbody.innerHTML = eqs.map(e =>
+      `<tr>
+        <td style="color:var(--accent)">${e.eqId}<span style="color:var(--text3);margin-left:4px;font-size:9px">${e.eqName || ''}</span></td>
+        <td><span class="kpi-dot" style="background:${dotColor(e.oee)}"></span>${e.oee != null ? e.oee.toFixed(1)+'%' : '--'}</td>
+        <td>${e.availability != null ? e.availability.toFixed(1)+'%' : '--'}</td>
+        <td>${e.performance  != null ? e.performance.toFixed(1)+'%'  : '--'}</td>
+        <td>${e.quality       != null ? e.quality.toFixed(1)+'%'      : '--'}</td>
+        <td style="color:${e.failures > 0 ? 'var(--red)' : 'var(--text2)'}">${e.failures ?? 0}</td>
+        <td>${e.mtbfMin != null ? e.mtbfMin.toFixed(0) : '--'}</td>
+        <td>${e.mttrMin != null ? e.mttrMin.toFixed(0) : '--'}</td>
+      </tr>`
+    ).join('');
+  },
+
   renderAll() {
     this.renderEquipCards(); this.renderQueue();
     this.renderLogs(); this.renderDbTable(); this.updateMetrics();
@@ -660,6 +773,7 @@ const Simulation = {
       // STEP 3: ERROR 설비 자동 복구 시뮬레이션
       DataEngine.autoRecovery();
       UI.renderAll();
+      UI.renderKpi(KpiEngine.calc());
       ChartManager.push(t, snap);
     }, 800);
   },
@@ -709,6 +823,60 @@ const ApiClient = {
   health()    { return this._fetch('/health');    },
   dashboard() { return this._fetch('/dashboard'); },
   chart()     { return this._fetch('/chart');     },
+  kpi()       { return this._fetch('/kpi');       },
+
+  async exportBlob(days) {
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const res = await fetch(`${Config.API_BASE}/export/sensor?days=${days}`, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.blob();
+    } finally {
+      clearTimeout(tid);
+    }
+  },
+};
+
+// ============================================================
+// KpiEngine — SIM 모드용 KPI 근사 계산 (State.dbRows 기반)
+// ============================================================
+const KpiEngine = {
+  calc() {
+    const rows   = State.dbRows;
+    const total  = rows.length || 1;
+    const normal = rows.filter(r => r.level === 'NORMAL').length;
+    const warn   = rows.filter(r => r.level === 'WARN').length;
+    const crit   = rows.filter(r => r.level === 'CRITICAL').length;
+
+    const quality     = +(normal / total * 100).toFixed(1);
+    const availability= +(Math.max(0, 100 - crit / total * 100 * 2)).toFixed(1);
+    const performance = +(Math.max(0, 100 - warn / total * 100 * 0.5)).toFixed(1);
+    const oee         = +(availability * performance * quality / 10000).toFixed(1);
+
+    // 설비별 근사값
+    const eqMap = {};
+    rows.forEach(r => {
+      if (!eqMap[r.eqId]) eqMap[r.eqId] = { total:0, normal:0, crit:0 };
+      eqMap[r.eqId].total++;
+      if (r.level === 'NORMAL') eqMap[r.eqId].normal++;
+      if (r.level === 'CRITICAL') eqMap[r.eqId].crit++;
+    });
+
+    const equipments = Config.EQUIPMENTS.map(eq => {
+      const m = eqMap[eq.eqId] || { total:1, normal:1, crit:0 };
+      const q = +(m.normal / m.total * 100).toFixed(1);
+      const a = +(Math.max(0, 100 - m.crit / m.total * 100 * 2)).toFixed(1);
+      const p = 95.0;
+      return { eqId: eq.eqId, eqName: eq.eqName,
+               availability: a, performance: p, quality: q,
+               oee: +(a * p * q / 10000).toFixed(1),
+               failures: m.crit, mtbfMin: null, mttrMin: null };
+    });
+
+    return { summary: { factoryOee: oee, availability, performance, quality,
+                        mtbfMin: null, mttrMin: null }, equipments };
+  },
 };
 
 // ============================================================
@@ -763,16 +931,17 @@ const PollingManager = {
 
   async _poll() {
     try {
-      // dashboard + chart 를 병렬로 요청
-      const [dash, chart] = await Promise.all([
+      const [dash, chart, kpi] = await Promise.all([
         ApiClient.dashboard(),
         ApiClient.chart(),
+        ApiClient.kpi(),
       ]);
       UI.applyApiDashboard(dash);
       ChartManager.applyApiData(chart);
+      UI.renderKpi(kpi);
     } catch (err) {
       console.warn('[PollingManager] API 응답 실패:', err.message);
-      this._enterSim();             // 실패 시 SIM 모드로 자동 전환
+      this._enterSim();
     }
   },
 
@@ -812,6 +981,34 @@ function injectAnomaly() {
   if (State.isLiveMode) { alert('LIVE 모드에서는 이상 주입을 사용할 수 없습니다.'); return; }
   Simulation.inject();
 }
+async function exportCsv() {
+  const days = 7;
+  if (State.isLiveMode) {
+    try {
+      const blob = await ApiClient.exportBlob(days);
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = `sensor_data_${days}d.csv`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('CSV 내보내기 실패: ' + e.message);
+    }
+  } else {
+    // SIM 모드 — State.dbRows를 CSV로 변환
+    if (!State.dbRows.length) { alert('내보낼 데이터가 없습니다.'); return; }
+    const header = 'data_id,eq_id,eq_name,temperature,vibration,anomaly_level,recorded_at\n';
+    const rows   = State.dbRows.map(r => {
+      const eq = Config.EQUIPMENTS.find(e => e.eqId === r.eqId);
+      return `${r.id},${r.eqId},"${eq ? eq.eqName : ''}",${r.temp.toFixed(2)},${r.vib.toFixed(2)},${r.level},${r.recordedAt}`;
+    }).join('\n');
+    const blob = new Blob(['﻿' + header + rows], { type: 'text/csv;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `sensor_data_sim_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+}
+
 function resetSim() {
   PollingManager._stopPoll();
   clearInterval(PollingManager._healthTimer);
@@ -835,6 +1032,7 @@ document.getElementById('sys-clock').textContent =
 ChartManager.init();
 UI.renderAll();
 UI.setMode(false);
+UI.renderKpi({ summary: {}, equipments: [] });
 
 // API 연결 시도 → 성공 시 LIVE, 실패 시 SIM 자동 시작
 PollingManager.init();

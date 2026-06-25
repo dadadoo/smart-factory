@@ -328,3 +328,137 @@ SELECT log_id, eq_id, message, created_at
 FROM error_logs
 WHERE log_level = 'CRITICAL' AND alert_sent = 0
 ORDER BY created_at DESC;
+
+-- ============================================================
+-- 10. 데이터 아카이브 테이블
+--     sensor_data 가 장기간 쌓이면 성능 저하 → 오래된 데이터를
+--     이 테이블로 이전 후 원본 삭제 (DataArchiver.java 가 수행)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS sensor_data_archive (
+    data_id      BIGINT        NOT NULL,
+    eq_id        VARCHAR(20)   NOT NULL,
+    temperature  DECIMAL(6,2)  NOT NULL,
+    vibration    DECIMAL(6,2)  NOT NULL,
+    humidity     DECIMAL(5,2)      NULL,
+    rpm          INT               NULL,
+    recorded_at  TIMESTAMP     NOT NULL,
+    archived_at  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (data_id),
+    INDEX idx_arch_eq   (eq_id),
+    INDEX idx_arch_time (recorded_at)
+);
+
+-- ============================================================
+-- 11. KPI 뷰
+-- ============================================================
+
+-- ⑤ 설비별 품질률: NORMAL 비율 (온도·진동 정상 범위)
+CREATE OR REPLACE VIEW v_kpi_quality AS
+SELECT
+    eq_id,
+    COUNT(*)                                                             AS total_cnt,
+    SUM(CASE WHEN temperature < 80 AND vibration < 40 THEN 1 ELSE 0 END) AS normal_cnt,
+    ROUND(
+        SUM(CASE WHEN temperature < 80 AND vibration < 40 THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(*), 0) * 100, 1
+    )                                                                    AS quality_pct
+FROM sensor_data
+GROUP BY eq_id;
+
+-- ⑥ 설비별 가동률: RUNNING 상태 유지 비율
+--    status_history 의 각 구간 시간을 계산
+CREATE OR REPLACE VIEW v_kpi_availability AS
+SELECT
+    e.eq_id,
+    ROUND(
+        SUM(CASE WHEN sh.new_status = 'RUNNING'
+            THEN TIMESTAMPDIFF(SECOND, sh.changed_at,
+                     IFNULL(LEAD(sh.changed_at) OVER (PARTITION BY sh.eq_id ORDER BY sh.changed_at), NOW()))
+            ELSE 0 END)
+        / NULLIF(
+            TIMESTAMPDIFF(SECOND, MIN(sh.changed_at), NOW()), 0
+          ) * 100, 1
+    ) AS availability_pct
+FROM equipments e
+JOIN status_history sh ON sh.eq_id = e.eq_id
+GROUP BY e.eq_id;
+
+-- ⑦ 설비별 MTTR (평균 복구 시간, 분 단위)
+--    ERROR 발생 → 다음 RUNNING 전환까지 소요 시간 평균
+CREATE OR REPLACE VIEW v_kpi_mttr AS
+SELECT
+    err.eq_id,
+    COUNT(*)                                                  AS failure_count,
+    ROUND(AVG(
+        TIMESTAMPDIFF(MINUTE, err.changed_at, rec.changed_at)
+    ), 1)                                                     AS avg_mttr_min
+FROM status_history err
+JOIN status_history rec ON rec.eq_id = err.eq_id
+    AND rec.new_status = 'RUNNING'
+    AND rec.history_id = (
+        SELECT MIN(h.history_id)
+        FROM status_history h
+        WHERE h.eq_id  = err.eq_id
+          AND h.new_status = 'RUNNING'
+          AND h.history_id > err.history_id
+    )
+WHERE err.new_status = 'ERROR'
+GROUP BY err.eq_id;
+
+-- ⑧ 설비별 MTBF (평균 고장 간격, 분 단위)
+--    연속된 ERROR 이벤트 사이 간격 평균
+CREATE OR REPLACE VIEW v_kpi_mtbf AS
+SELECT eq_id,
+    ROUND(AVG(gap_min), 1) AS avg_mtbf_min
+FROM (
+    SELECT
+        eq_id,
+        TIMESTAMPDIFF(MINUTE,
+            LAG(changed_at) OVER (PARTITION BY eq_id ORDER BY changed_at),
+            changed_at
+        ) AS gap_min
+    FROM status_history
+    WHERE new_status = 'ERROR'
+) t
+WHERE gap_min IS NOT NULL
+GROUP BY eq_id;
+
+-- ⑨ KPI 종합 뷰 (OEE = 가동률 × 성능률 × 품질률)
+--    성능률: 실제 수집 건수 / 기대 수집 건수 (수집 주기 1.5초 기준)
+CREATE OR REPLACE VIEW v_kpi_oee AS
+SELECT
+    e.eq_id,
+    e.eq_name,
+    IFNULL(a.availability_pct, 0)                              AS availability_pct,
+    ROUND(
+        COUNT(sd.data_id)
+        / NULLIF(
+            TIMESTAMPDIFF(SECOND, MIN(sd.recorded_at), MAX(sd.recorded_at)) / 1.5
+          , 0) * 100, 1
+    )                                                          AS performance_pct,
+    IFNULL(q.quality_pct, 0)                                   AS quality_pct,
+    ROUND(
+        IFNULL(a.availability_pct, 0) / 100
+        * LEAST(ROUND(COUNT(sd.data_id)
+            / NULLIF(TIMESTAMPDIFF(SECOND,MIN(sd.recorded_at),MAX(sd.recorded_at))/1.5,0)*100,1),100) / 100
+        * IFNULL(q.quality_pct, 0) / 100
+        * 100, 1
+    )                                                          AS oee_pct,
+    IFNULL(mtbf.avg_mtbf_min, NULL)                            AS mtbf_min,
+    IFNULL(mttr.avg_mttr_min, NULL)                            AS mttr_min,
+    IFNULL(mttr.failure_count, 0)                              AS failure_count
+FROM equipments e
+LEFT JOIN sensor_data      sd   ON sd.eq_id   = e.eq_id
+LEFT JOIN v_kpi_availability a  ON a.eq_id    = e.eq_id
+LEFT JOIN v_kpi_quality      q  ON q.eq_id    = e.eq_id
+LEFT JOIN v_kpi_mtbf      mtbf  ON mtbf.eq_id = e.eq_id
+LEFT JOIN v_kpi_mttr      mttr  ON mttr.eq_id = e.eq_id
+GROUP BY e.eq_id, e.eq_name, a.availability_pct, q.quality_pct,
+         mtbf.avg_mtbf_min, mttr.avg_mttr_min, mttr.failure_count;
+
+-- [H] KPI 전체 조회
+SELECT eq_id, eq_name,
+       availability_pct, performance_pct, quality_pct, oee_pct,
+       mtbf_min, mttr_min, failure_count
+FROM v_kpi_oee
+ORDER BY eq_id;

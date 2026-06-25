@@ -55,8 +55,15 @@ public class FactoryCollector {
         }
 
         try {
-            DatabaseRepository repo = new DatabaseRepository(conn, detector);
+            DatabaseRepository repo     = new DatabaseRepository(conn, detector);
+            DataArchiver       archiver = new DataArchiver(conn);
             int totalRounds = cfg.collectRounds();
+
+            // 기동 시 아카이빙 1회 실행
+            try { archiver.archive(); }
+            catch (Exception e) {
+                AppLogger.error(AppLogger.TAG_SYSTEM, "아카이빙 실패 — 수집은 계속 진행", e);
+            }
 
             AppLogger.info(AppLogger.TAG_SYSTEM,
                 "수집기 시작 — 라운드: " + (totalRounds == 0 ? "∞" : totalRounds));

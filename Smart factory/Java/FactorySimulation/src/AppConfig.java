@@ -37,6 +37,7 @@ public class AppConfig {
         overrideFromEnv("THRESHOLD_VIB_WARN",     "threshold.vib.warn");
         overrideFromEnv("THRESHOLD_VIB_CRITICAL", "threshold.vib.critical");
         overrideFromEnv("API_PORT",               "api.port");
+        overrideFromEnv("ARCHIVE_RETENTION_DAYS", "archive.retention.days");
         overrideFromEnv("DB_RETRY_MAX",           "db.retry.max");
         overrideFromEnv("DB_RETRY_DELAY_MS",      "db.retry.delay.ms");
         overrideFromEnv("QUERY_RETRY_MAX",        "query.retry.max");
@@ -68,6 +69,9 @@ public class AppConfig {
 
     // ── API 서버 ─────────────────────────────────────────────
     public int apiPort() { return intVal("api.port"); }
+
+    // ── 아카이빙 ─────────────────────────────────────────────
+    public int archiveRetentionDays() { return intVal("archive.retention.days"); }
 
     // ── 재시도 설정 ──────────────────────────────────────────
     public int  dbRetryMax()        { return intVal("db.retry.max");         }

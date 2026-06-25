@@ -1,6 +1,5 @@
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -15,24 +14,32 @@ import java.util.concurrent.Executors;
  * 수집기 스레드와 별도 스레드풀에서 동작하며 DB 조회 전용 연결을 사용합니다.
  *
  * 엔드포인트:
- *   GET /api/health    — 헬스체크
- *   GET /api/dashboard — 설비 현황 + 미해결 로그 + 지표
- *   GET /api/chart     — 설비별 온도 이력 (최근 20건)
+ *   GET /api/health         — 헬스체크
+ *   GET /api/dashboard      — 설비 현황 + 미해결 로그 + 지표
+ *   GET /api/chart          — 설비별 온도 이력 (최근 20건)
+ *   GET /api/kpi            — OEE / MTBF / MTTR KPI 지표
+ *   GET /api/export/sensor  — sensor_data CSV 다운로드 (?days=N, 기본 7일)
  */
 public class ApiServer {
 
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
-    private final HttpServer server;
-    private final Connection  readConn;
+    private final HttpServer    server;
+    private final Connection    readConn;
+    private final KpiCalculator kpi;
+    private final DataArchiver  archiver;
 
     public ApiServer(int port, Connection readConn) throws IOException {
         this.readConn = readConn;
+        this.kpi      = new KpiCalculator(readConn);
+        this.archiver = new DataArchiver(readConn);
         this.server   = HttpServer.create(new InetSocketAddress(port), 16);
 
-        server.createContext("/api/health",    ex -> handle(ex, this::healthJson));
-        server.createContext("/api/dashboard", ex -> handle(ex, this::dashboardJson));
-        server.createContext("/api/chart",     ex -> handle(ex, this::chartJson));
+        server.createContext("/api/health",        ex -> handle(ex, this::healthJson));
+        server.createContext("/api/dashboard",     ex -> handle(ex, this::dashboardJson));
+        server.createContext("/api/chart",         ex -> handle(ex, this::chartJson));
+        server.createContext("/api/kpi",           ex -> handle(ex, this::kpiJson));
+        server.createContext("/api/export/sensor", ex -> handleCsv(ex));
 
         server.setExecutor(Executors.newFixedThreadPool(4));
     }
@@ -225,5 +232,41 @@ public class ApiServer {
             .raw("labels",    labelArr.build())
             .raw("series",    seriesObj.build())
             .build();
+    }
+
+    // ── /api/kpi ──────────────────────────────────────────────
+
+    private String kpiJson() throws SQLException {
+        return kpi.calcAllJson();
+    }
+
+    // ── /api/export/sensor ────────────────────────────────────
+    // ?days=N (기본 7)  →  CSV 파일 다운로드
+
+    private void handleCsv(HttpExchange ex) throws IOException {
+        int days = 7;
+        String query = ex.getRequestURI().getQuery();
+        if (query != null) {
+            for (String p : query.split("&")) {
+                if (p.startsWith("days=")) {
+                    try { days = Integer.parseInt(p.substring(5)); } catch (NumberFormatException ignored) {}
+                }
+            }
+        }
+
+        ex.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+        ex.getResponseHeaders().add("Content-Type",        "text/csv; charset=utf-8");
+        ex.getResponseHeaders().add("Content-Disposition",
+            "attachment; filename=\"sensor_data_" + days + "d.csv\"");
+
+        try {
+            String csv = archiver.exportCsv(days);
+            byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, bytes.length);
+            try (java.io.OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+        } catch (Exception e) {
+            AppLogger.error(AppLogger.TAG_SYSTEM, "CSV 내보내기 오류", e);
+            ex.sendResponseHeaders(500, -1);
+        }
     }
 }
