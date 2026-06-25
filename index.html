@@ -160,6 +160,15 @@
     .eq-badge{font-size:10px;padding:2px 7px;}
   }
 
+  /* MODE BADGE */
+  .mode-badge{font-family:var(--mono);font-size:10px;font-weight:600;padding:3px 7px;border-radius:4px;letter-spacing:.05em;cursor:default;}
+  .mode-live{background:rgba(34,197,94,.18);color:var(--green);border:1px solid rgba(34,197,94,.4);}
+  .mode-sim{background:rgba(245,158,11,.15);color:var(--yellow);border:1px solid rgba(245,158,11,.35);}
+
+  /* POLL SELECT */
+  .poll-select{font-family:var(--mono);font-size:11px;background:var(--bg3);color:var(--text2);border:1px solid var(--border2);border-radius:6px;padding:5px 7px;cursor:pointer;-webkit-appearance:none;}
+  .poll-select:focus{outline:none;border-color:var(--accent);}
+
   /* MOBILE narrow — hide some text */
   @media(max-width:479px){
     .hd-sub{display:none;}
@@ -186,6 +195,7 @@
   </div>
   <div class="hd-right">
     <div id="sys-clock">--:--:--</div>
+    <div id="mode-badge" class="mode-badge mode-sim" title="현재 데이터 소스">SIM</div>
     <div class="sys-status">
       <div class="pulse" id="pulse-dot"></div>
       <span class="sys-label-txt" id="sys-label">가동 중</span>
@@ -217,7 +227,12 @@
       <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg><span class="btn-lbl">초기화</span>
     </button>
     <div class="ctrl-sep"></div>
-    <div class="round-info">라운드 <span id="round-num">0</span> · 1.5s · 이상률 20%</div>
+    <select class="poll-select" id="poll-interval" onchange="PollingManager.setInterval(+this.value)" title="폴링 주기">
+      <option value="1000">1초</option>
+      <option value="2000" selected>2초</option>
+      <option value="5000">5초</option>
+    </select>
+    <div class="round-info">라운드 <span id="round-num">0</span> · <span id="mode-label">SIM</span></div>
   </div>
 
   <div class="eq-grid" id="eq-grid"></div>
@@ -260,149 +275,569 @@
 </div>
 
 <script>
-const ANOMALY_CHANCE=.20,CRITICAL_CHANCE=.08,COLLECT_INTERVAL=1500;
-const MAX_HIST=20,MAX_LOGS=40,MAX_ROWS=30;
-const EQUIPMENTS=[
-  {eqId:'EQ-001',eqName:'1호 프레스 가공기',  eqType:'프레스',    location:'A동 1라인',status:'RUNNING',baseTempMin:40,baseTempMax:65,baseVibMin:10,baseVibMax:22},
-  {eqId:'EQ-002',eqName:'2호 플라스틱 사출기',eqType:'사출기',    location:'A동 2라인',status:'RUNNING',baseTempMin:45,baseTempMax:70,baseVibMin:12,baseVibMax:25},
-  {eqId:'EQ-003',eqName:'3호 CNC 선반',        eqType:'CNC',       location:'B동 1라인',status:'RUNNING',baseTempMin:50,baseTempMax:68,baseVibMin:14,baseVibMax:28},
-  {eqId:'EQ-004',eqName:'4호 용접 로봇',       eqType:'용접로봇',  location:'B동 2라인',status:'RUNNING',baseTempMin:60,baseTempMax:78,baseVibMin:16,baseVibMax:32},
-  {eqId:'EQ-005',eqName:'5호 컨베이어 벨트',  eqType:'컨베이어',  location:'C동 1라인',status:'RUNNING',baseTempMin:30,baseTempMax:50,baseVibMin:6, baseVibMax:16},
-  {eqId:'EQ-006',eqName:'6호 레이저 절단기',  eqType:'레이저절단',location:'C동 2라인',status:'RUNNING',baseTempMin:55,baseTempMax:75,baseVibMin:18,baseVibMax:35},
-];
-const EQ_COLORS=['#3b82f6','#22c55e','#f59e0b','#ef4444','#06b6d4','#a855f7'];
-let simRunning=false,simTimer=null;
-let totalCollected=0,dbCount=0,warnCount=0,critCount=0;
-let bufferQueue=[],logs=[],dbRows=[],round=0,dataIdSeq=1,pendingAnomaly=false;
-const eqLatest={};
-EQUIPMENTS.forEach(e=>{eqLatest[e.eqId]={temp:e.baseTempMin+5,vib:e.baseVibMin+2};});
+'use strict';
+// ============================================================
+// Config — 변경 가능한 상수 한 곳에 집중
+// ============================================================
+const Config = {
+  API_BASE:         'http://localhost:8080/api',
+  API_TIMEOUT_MS:   3000,   // fetch 타임아웃
+  HEALTH_CHECK_MS:  10000,  // SIM 모드에서 API 복구 감지 주기
+  ANOMALY_CHANCE:   0.20,
+  CRITICAL_CHANCE:  0.08,
+  COLLECT_INTERVAL: 1500,
+  MAX_HIST:  20,
+  MAX_LOGS:  40,
+  MAX_ROWS:  30,
+  EQ_COLORS: ['#3b82f6','#22c55e','#f59e0b','#ef4444','#06b6d4','#a855f7'],
+  EQUIPMENTS: [
+    {eqId:'EQ-001',eqName:'1호 프레스 가공기',  eqType:'프레스',    location:'A동 1라인',status:'RUNNING',baseTempMin:40,baseTempMax:65,baseVibMin:10,baseVibMax:22},
+    {eqId:'EQ-002',eqName:'2호 플라스틱 사출기',eqType:'사출기',    location:'A동 2라인',status:'RUNNING',baseTempMin:45,baseTempMax:70,baseVibMin:12,baseVibMax:25},
+    {eqId:'EQ-003',eqName:'3호 CNC 선반',        eqType:'CNC',       location:'B동 1라인',status:'RUNNING',baseTempMin:50,baseTempMax:68,baseVibMin:14,baseVibMax:28},
+    {eqId:'EQ-004',eqName:'4호 용접 로봇',       eqType:'용접로봇',  location:'B동 2라인',status:'RUNNING',baseTempMin:60,baseTempMax:78,baseVibMin:16,baseVibMax:32},
+    {eqId:'EQ-005',eqName:'5호 컨베이어 벨트',  eqType:'컨베이어',  location:'C동 1라인',status:'RUNNING',baseTempMin:30,baseTempMax:50,baseVibMin:6, baseVibMax:16},
+    {eqId:'EQ-006',eqName:'6호 레이저 절단기',  eqType:'레이저절단',location:'C동 2라인',status:'RUNNING',baseTempMin:55,baseTempMax:75,baseVibMin:18,baseVibMax:35},
+  ],
+};
 
-function rand(a,b){return Math.round((a+Math.random()*(b-a))*100)/100;}
-function now(){return new Date().toLocaleTimeString('ko-KR',{hour12:false});}
-function nowDT(){return new Date().toLocaleString('ko-KR',{hour12:false});}
-function detectLevel(t,v){if(t>=90||v>=60)return'CRITICAL';if(t>=80||v>=40)return'WARN';return'NORMAL';}
+// ============================================================
+// State — 런타임 가변 상태 한 곳에 집중
+// ============================================================
+const State = {
+  isLiveMode:    false,  // true = API 폴링 모드, false = 로컬 시뮬레이션 모드
+  simRunning:    false,
+  simTimer:      null,
+  pendingAnomaly:false,
+  round:         0,
+  dataIdSeq:     1,
+  totalCollected:0,
+  dbCount:       0,
+  warnCount:     0,
+  critCount:     0,
+  bufferQueue:   [],
+  logs:          [],
+  dbRows:        [],
+  eqLatest:      {},
 
-function generateSensor(eq,force){
-  let temp,vib;
-  const anomaly=force||Math.random()<ANOMALY_CHANCE;
-  const critical=anomaly&&Math.random()<CRITICAL_CHANCE;
-  if(critical){temp=rand(eq.baseTempMax+15,eq.baseTempMax+30);vib=rand(eq.baseVibMax+20,eq.baseVibMax+35);}
-  else if(anomaly){temp=Math.random()>.5?rand(80,89):rand(eq.baseTempMin,eq.baseTempMax);vib=Math.random()>.5?rand(40,55):rand(eq.baseVibMin,eq.baseVibMax);}
-  else{temp=rand(eq.baseTempMin,eq.baseTempMax);vib=rand(eq.baseVibMin,eq.baseVibMax);}
-  return{eqId:eq.eqId,temp,vib,level:detectLevel(temp,vib)};
-}
-function eCode(t,v){return(t>=80&&v>=40)?'MULTI_ERR':t>=80?'OVERHEAT':v>=40?'VIB_SPIKE':'UNK';}
-function eMsg(n,t,v){
-  if(t>=80&&v>=40)return`${n} 온도(${t.toFixed(1)}°C)·진동(${v.toFixed(1)} Hz) 동시 초과`;
-  if(t>=80)return`${n} 온도 ${t.toFixed(1)}°C 초과 — 냉각 점검`;
-  return`${n} 진동 ${v.toFixed(1)} Hz 급증 — 마모 의심`;
-}
-
-let tempChart;
-function initChart(){
-  if(tempChart)tempChart.destroy();
-  const thresh={id:'thresh',afterDraw(ch){
-    const{ctx:c,chartArea:{left,right},scales:{y}}=ch;
-    [{val:80,color:'rgba(245,158,11,.6)',dash:[5,4]},{val:90,color:'rgba(239,68,68,.6)',dash:[3,3]}].forEach(({val,color,dash})=>{
-      const yp=y.getPixelForValue(val);c.save();c.setLineDash(dash);c.strokeStyle=color;c.lineWidth=1;
-      c.beginPath();c.moveTo(left,yp);c.lineTo(right,yp);c.stroke();c.restore();
+  reset() {
+    this.simRunning = false; this.pendingAnomaly = false;
+    this.round = 0; this.dataIdSeq = 1;
+    this.totalCollected = 0; this.dbCount = 0; this.warnCount = 0; this.critCount = 0;
+    this.bufferQueue = []; this.logs = []; this.dbRows = [];
+    Config.EQUIPMENTS.forEach(eq => {
+      eq.status = 'RUNNING';
+      this.eqLatest[eq.eqId] = { temp: eq.baseTempMin + 5, vib: eq.baseVibMin + 2 };
     });
-  }};
-  Chart.register(thresh);
-  tempChart=new Chart(document.getElementById('tempChart').getContext('2d'),{
-    type:'line',
-    data:{labels:[],datasets:EQUIPMENTS.map((eq,i)=>({label:eq.eqId,data:[],borderColor:EQ_COLORS[i],tension:.35,pointRadius:2,borderWidth:2,fill:false}))},
-    options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,backgroundColor:'#111827',borderColor:'rgba(99,130,180,.3)',borderWidth:1,titleColor:'#8fa3c0',bodyColor:'#e2e8f4',padding:8,callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.y.toFixed(1)}°C`}}},
-      scales:{y:{min:20,max:110,grid:{color:'rgba(99,130,180,.10)'},ticks:{color:'#4a6080',font:{size:10,family:"'IBM Plex Mono',monospace"},callback:v=>v+'°'}},x:{grid:{display:false},ticks:{color:'#4a6080',font:{size:9,family:"'IBM Plex Mono',monospace"},maxTicksLimit:6,autoSkip:true}}},
-      animation:{duration:250}}
-  });
-  document.getElementById('temp-legend').innerHTML=EQUIPMENTS.map((eq,i)=>`<span class="leg-item"><span class="leg-dot" style="background:${EQ_COLORS[i]}"></span>${eq.eqId}</span>`).join('');
-}
+  },
+};
+State.reset();
 
-function renderEquipCards(){
-  document.getElementById('eq-grid').innerHTML=EQUIPMENTS.map((eq)=>{
-    const lat=eqLatest[eq.eqId];const lvl=detectLevel(lat.temp,lat.vib);
-    const cls=lvl==='CRITICAL'?'critical':lvl==='WARN'?'warn':'';
-    const errCls=eq.status==='ERROR'?'error':'';
-    const tPct=Math.min((lat.temp/110)*100,100).toFixed(1);
-    const vPct=Math.min((lat.vib/80)*100,100).toFixed(1);
-    const tC=lat.temp>=90?'var(--red)':lat.temp>=80?'var(--yellow)':'#22c55e';
-    const vC=lat.vib>=60?'var(--red)':lat.vib>=40?'var(--yellow)':'#22c55e';
-    const badge=eq.status==='ERROR'?'<span class="eq-badge badge-error">ERR</span>':lvl==='CRITICAL'?'<span class="eq-badge badge-critical">CRIT</span>':lvl==='WARN'?'<span class="eq-badge badge-warn">WARN</span>':'<span class="eq-badge badge-running">OK</span>';
-    const tCls=lat.temp>=90?'hot':lat.temp>=80?'warm':'';
-    const vCls=lat.vib>=60?'hot':lat.vib>=40?'warm':'';
-    return`<div class="eq-card ${cls} ${errCls}">
-      <div class="eq-top"><div><div class="eq-id">${eq.eqId} · ${eq.eqType}</div><div class="eq-name">${eq.eqName}</div><div class="eq-loc">${eq.location}</div></div>${badge}</div>
-      <div class="eq-sensors">
-        <div class="sensor-row"><div class="sensor-top"><span class="sensor-lbl">온도 (°C)</span><span class="sensor-val ${tCls}">${lat.temp.toFixed(1)}°C</span></div><div class="bar-bg"><div class="bar-fg" style="width:${tPct}%;background:${tC}"></div></div></div>
-        <div class="sensor-row"><div class="sensor-top"><span class="sensor-lbl">진동 (Hz)</span><span class="sensor-val ${vCls}">${lat.vib.toFixed(1)} Hz</span></div><div class="bar-bg"><div class="bar-fg" style="width:${vPct}%;background:${vC}"></div></div></div>
-      </div></div>`;
-  }).join('');
-}
+// ============================================================
+// DataEngine — 데이터 생성 + 이상 감지 + 자동 복구
+// ============================================================
+const DataEngine = {
+  rand(a, b) { return Math.round((a + Math.random() * (b - a)) * 100) / 100; },
 
-function renderQueue(){
-  const t=document.getElementById('queue-track');
-  t.innerHTML=bufferQueue.length===0?'<span style="font-size:11px;color:var(--text3)">대기 중인 데이터 없음</span>':bufferQueue.map(d=>{const c=d.level==='CRITICAL'?'chip-crit':d.level==='WARN'?'chip-warn':'chip-ok';return`<div class="q-chip ${c}">${d.eqId.replace('EQ-','')}<br>${d.level.slice(0,4)}</div>`;}).join('');
-}
+  detectLevel(t, v) {
+    if (t >= 90 || v >= 60) return 'CRITICAL';
+    if (t >= 80 || v >= 40) return 'WARN';
+    return 'NORMAL';
+  },
 
-function renderLogs(){
-  document.getElementById('log-count').textContent=logs.length+'건';
-  const l=document.getElementById('log-list');
-  l.innerHTML=logs.length===0?'<div class="empty-state">이상 감지 시 로그가 기록됩니다</div>':logs.map(l=>`<div class="log-entry ${l.level.toLowerCase()}"><div class="log-header"><span class="log-lvl ${l.level==='CRITICAL'?'lvl-crit':'lvl-warn'}">${l.level}</span><span class="log-eq">${l.eqId}</span><span class="log-code">${l.code}</span><span class="log-time">${l.time}</span></div><div class="log-msg">${l.msg}</div></div>`).join('');
-}
+  generateSensor(eq, force) {
+    const anomaly   = force || Math.random() < Config.ANOMALY_CHANCE;
+    const critical  = anomaly && Math.random() < Config.CRITICAL_CHANCE;
+    let temp, vib;
+    if (critical) {
+      temp = this.rand(eq.baseTempMax + 15, eq.baseTempMax + 30);
+      vib  = this.rand(eq.baseVibMax  + 20, eq.baseVibMax  + 35);
+    } else if (anomaly) {
+      temp = Math.random() > .5 ? this.rand(80, 89) : this.rand(eq.baseTempMin, eq.baseTempMax);
+      vib  = Math.random() > .5 ? this.rand(40, 55) : this.rand(eq.baseVibMin,  eq.baseVibMax);
+    } else {
+      temp = this.rand(eq.baseTempMin, eq.baseTempMax);
+      vib  = this.rand(eq.baseVibMin,  eq.baseVibMax);
+    }
+    return { eqId: eq.eqId, temp, vib, level: this.detectLevel(temp, vib) };
+  },
 
-function renderDbTable(){
-  const b=document.getElementById('db-tbody');
-  if(!dbRows.length){b.innerHTML='<tr><td colspan="6" class="empty-state">데이터 없음</td></tr>';return;}
-  b.innerHTML=dbRows.slice(0,MAX_ROWS).map(r=>{const lc=r.level==='CRITICAL'?'var(--red)':r.level==='WARN'?'var(--yellow)':'var(--green)';const bc=r.level==='CRITICAL'?'badge-critical':r.level==='WARN'?'badge-warn':'badge-running';return`<tr><td class="td-id">#${r.id}</td><td class="td-mono" style="color:var(--accent)">${r.eqId}</td><td class="td-mono" style="color:${lc}">${r.temp.toFixed(1)}</td><td class="td-mono" style="color:${lc}">${r.vib.toFixed(1)}</td><td><span class="eq-badge ${bc}" style="font-size:9px">${r.level}</span></td><td class="td-mono" style="color:var(--text3);font-size:10px">${r.recordedAt}</td></tr>`;}).join('');
-}
+  errorCode(t, v) {
+    return (t >= 80 && v >= 40) ? 'MULTI_ERR' : t >= 80 ? 'OVERHEAT' : v >= 40 ? 'VIB_SPIKE' : 'UNK';
+  },
 
-function updateMetrics(){
-  document.getElementById('m-total').textContent=totalCollected;
-  document.getElementById('m-db').textContent=dbCount;
-  document.getElementById('m-queue').textContent=bufferQueue.length;
-  document.getElementById('m-warn').textContent=warnCount;
-  document.getElementById('m-crit').textContent=critCount;
-  document.getElementById('round-num').textContent=round;
-}
+  errorMessage(name, t, v) {
+    if (t >= 80 && v >= 40) return `${name} 온도(${t.toFixed(1)}°C)·진동(${v.toFixed(1)} Hz) 동시 초과`;
+    if (t >= 80)             return `${name} 온도 ${t.toFixed(1)}°C 초과 — 냉각 점검`;
+    return `${name} 진동 ${v.toFixed(1)} Hz 급증 — 마모 의심`;
+  },
 
-function pushChart(t,snap){
-  tempChart.data.labels.push(t);
-  EQUIPMENTS.forEach((eq,i)=>{tempChart.data.datasets[i].data.push(snap[eq.eqId]??null);});
-  if(tempChart.data.labels.length>MAX_HIST){tempChart.data.labels.shift();tempChart.data.datasets.forEach(ds=>ds.data.shift());}
-  tempChart.update('none');
-}
-
-function autoRecovery(){EQUIPMENTS.forEach(eq=>{if(eq.status==='ERROR'&&Math.random()<.30)eq.status='RUNNING';});}
-
-function tick(){
-  round++;const t=now(),snap={},force=pendingAnomaly;pendingAnomaly=false;
-  EQUIPMENTS.forEach(eq=>{if(eq.status==='STOPPED')return;const d=generateSensor(eq,force&&Math.random()>.5);bufferQueue.push(d);totalCollected++;eqLatest[eq.eqId]={temp:d.temp,vib:d.vib};snap[eq.eqId]=d.temp;});
-  renderEquipCards();renderQueue();updateMetrics();
-  setTimeout(()=>{
-    const batch=[...bufferQueue];bufferQueue=[];
-    batch.forEach(d=>{
-      const row={id:dataIdSeq++,eqId:d.eqId,temp:d.temp,vib:d.vib,level:d.level,recordedAt:nowDT()};
-      dbRows.unshift(row);if(dbRows.length>MAX_ROWS)dbRows.pop();dbCount++;
-      if(d.level!=='NORMAL'){const eq=EQUIPMENTS.find(e=>e.eqId===d.eqId);logs.unshift({eqId:d.eqId,level:d.level,code:eCode(d.temp,d.vib),msg:eMsg(eq.eqName,d.temp,d.vib),time:t});if(logs.length>MAX_LOGS)logs.pop();if(d.level==='CRITICAL'){critCount++;eq.status='ERROR';}else{warnCount++;}}
+  autoRecovery() {
+    Config.EQUIPMENTS.forEach(eq => {
+      if (eq.status === 'ERROR' && Math.random() < 0.30) eq.status = 'RUNNING';
     });
-    autoRecovery();renderEquipCards();renderQueue();renderLogs();renderDbTable();updateMetrics();pushChart(t,snap);
-  },800);
+  },
+};
+
+// ============================================================
+// ChartManager — Chart.js 초기화 및 데이터 추가
+// ============================================================
+const ChartManager = {
+  chart: null,
+
+  init() {
+    if (this.chart) this.chart.destroy();
+
+    const thresholdPlugin = {
+      id: 'thresh',
+      afterDraw(ch) {
+        const { ctx: c, chartArea: { left, right }, scales: { y } } = ch;
+        [{ val: 80, color: 'rgba(245,158,11,.6)', dash: [5, 4] },
+         { val: 90, color: 'rgba(239,68,68,.6)',  dash: [3, 3] }].forEach(({ val, color, dash }) => {
+          const yp = y.getPixelForValue(val);
+          c.save(); c.setLineDash(dash); c.strokeStyle = color; c.lineWidth = 1;
+          c.beginPath(); c.moveTo(left, yp); c.lineTo(right, yp); c.stroke(); c.restore();
+        });
+      },
+    };
+    Chart.register(thresholdPlugin);
+
+    this.chart = new Chart(document.getElementById('tempChart').getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: Config.EQUIPMENTS.map((eq, i) => ({
+          label: eq.eqId, data: [], borderColor: Config.EQ_COLORS[i],
+          tension: .35, pointRadius: 2, borderWidth: 2, fill: false,
+        })),
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            mode: 'index', intersect: false,
+            backgroundColor: '#111827', borderColor: 'rgba(99,130,180,.3)', borderWidth: 1,
+            titleColor: '#8fa3c0', bodyColor: '#e2e8f4', padding: 8,
+            callbacks: { label: c => ` ${c.dataset.label}: ${c.parsed.y.toFixed(1)}°C` },
+          },
+        },
+        scales: {
+          y: { min: 20, max: 110, grid: { color: 'rgba(99,130,180,.10)' },
+               ticks: { color: '#4a6080', font: { size: 10, family: "'IBM Plex Mono',monospace" }, callback: v => v + '°' } },
+          x: { grid: { display: false },
+               ticks: { color: '#4a6080', font: { size: 9, family: "'IBM Plex Mono',monospace" }, maxTicksLimit: 6, autoSkip: true } },
+        },
+        animation: { duration: 250 },
+      },
+    });
+
+    document.getElementById('temp-legend').innerHTML = Config.EQUIPMENTS
+      .map((eq, i) => `<span class="leg-item"><span class="leg-dot" style="background:${Config.EQ_COLORS[i]}"></span>${eq.eqId}</span>`)
+      .join('');
+  },
+
+  push(timeLabel, tempSnap) {
+    this.chart.data.labels.push(timeLabel);
+    Config.EQUIPMENTS.forEach((eq, i) => {
+      this.chart.data.datasets[i].data.push(tempSnap[eq.eqId] ?? null);
+    });
+    if (this.chart.data.labels.length > Config.MAX_HIST) {
+      this.chart.data.labels.shift();
+      this.chart.data.datasets.forEach(ds => ds.data.shift());
+    }
+    this.chart.update('none');
+  },
+
+  clear() {
+    this.chart.data.labels = [];
+    this.chart.data.datasets.forEach(ds => ds.data = []);
+    this.chart.update();
+  },
+
+  // API /api/chart 응답을 차트에 직접 반영
+  applyApiData(chartData) {
+    this.chart.data.labels = chartData.labels || [];
+    Config.EQUIPMENTS.forEach((eq, i) => {
+      this.chart.data.datasets[i].data = (chartData.series || {})[eq.eqId] || [];
+    });
+    this.chart.update('none');
+  },
+};
+
+// ============================================================
+// UI — DOM 렌더링 전담 (읽기 전용 — State/Config만 참조)
+// ============================================================
+const UI = {
+  now()   { return new Date().toLocaleTimeString('ko-KR', { hour12: false }); },
+  nowDT() { return new Date().toLocaleString('ko-KR',    { hour12: false }); },
+
+  renderEquipCards() {
+    document.getElementById('eq-grid').innerHTML = Config.EQUIPMENTS.map(eq => {
+      const lat   = State.eqLatest[eq.eqId];
+      const lvl   = DataEngine.detectLevel(lat.temp, lat.vib);
+      const cls   = lvl === 'CRITICAL' ? 'critical' : lvl === 'WARN' ? 'warn' : '';
+      const errCls= eq.status === 'ERROR' ? 'error' : '';
+      const tPct  = Math.min((lat.temp / 110) * 100, 100).toFixed(1);
+      const vPct  = Math.min((lat.vib  / 80)  * 100, 100).toFixed(1);
+      const tC    = lat.temp >= 90 ? 'var(--red)' : lat.temp >= 80 ? 'var(--yellow)' : '#22c55e';
+      const vC    = lat.vib  >= 60 ? 'var(--red)' : lat.vib  >= 40 ? 'var(--yellow)' : '#22c55e';
+      const tCls  = lat.temp >= 90 ? 'hot' : lat.temp >= 80 ? 'warm' : '';
+      const vCls  = lat.vib  >= 60 ? 'hot' : lat.vib  >= 40 ? 'warm' : '';
+      const badge = eq.status === 'ERROR'
+        ? '<span class="eq-badge badge-error">ERR</span>'
+        : lvl === 'CRITICAL' ? '<span class="eq-badge badge-critical">CRIT</span>'
+        : lvl === 'WARN'     ? '<span class="eq-badge badge-warn">WARN</span>'
+        : '<span class="eq-badge badge-running">OK</span>';
+      return `<div class="eq-card ${cls} ${errCls}">
+        <div class="eq-top"><div><div class="eq-id">${eq.eqId} · ${eq.eqType}</div><div class="eq-name">${eq.eqName}</div><div class="eq-loc">${eq.location}</div></div>${badge}</div>
+        <div class="eq-sensors">
+          <div class="sensor-row"><div class="sensor-top"><span class="sensor-lbl">온도 (°C)</span><span class="sensor-val ${tCls}">${lat.temp.toFixed(1)}°C</span></div><div class="bar-bg"><div class="bar-fg" style="width:${tPct}%;background:${tC}"></div></div></div>
+          <div class="sensor-row"><div class="sensor-top"><span class="sensor-lbl">진동 (Hz)</span><span class="sensor-val ${vCls}">${lat.vib.toFixed(1)} Hz</span></div><div class="bar-bg"><div class="bar-fg" style="width:${vPct}%;background:${vC}"></div></div></div>
+        </div></div>`;
+    }).join('');
+  },
+
+  renderQueue() {
+    const el = document.getElementById('queue-track');
+    el.innerHTML = State.bufferQueue.length === 0
+      ? '<span style="font-size:11px;color:var(--text3)">대기 중인 데이터 없음</span>'
+      : State.bufferQueue.map(d => {
+          const c = d.level === 'CRITICAL' ? 'chip-crit' : d.level === 'WARN' ? 'chip-warn' : 'chip-ok';
+          return `<div class="q-chip ${c}">${d.eqId.replace('EQ-','')}<br>${d.level.slice(0,4)}</div>`;
+        }).join('');
+  },
+
+  renderLogs() {
+    document.getElementById('log-count').textContent = State.logs.length + '건';
+    const el = document.getElementById('log-list');
+    el.innerHTML = State.logs.length === 0
+      ? '<div class="empty-state">이상 감지 시 로그가 기록됩니다</div>'
+      : State.logs.map(l => `
+          <div class="log-entry ${l.level.toLowerCase()}">
+            <div class="log-header">
+              <span class="log-lvl ${l.level === 'CRITICAL' ? 'lvl-crit' : 'lvl-warn'}">${l.level}</span>
+              <span class="log-eq">${l.eqId}</span>
+              <span class="log-code">${l.code}</span>
+              <span class="log-time">${l.time}</span>
+            </div>
+            <div class="log-msg">${l.msg}</div>
+          </div>`).join('');
+  },
+
+  renderDbTable() {
+    const tbody = document.getElementById('db-tbody');
+    if (!State.dbRows.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">데이터 없음</td></tr>';
+      return;
+    }
+    tbody.innerHTML = State.dbRows.slice(0, Config.MAX_ROWS).map(r => {
+      const lc = r.level === 'CRITICAL' ? 'var(--red)' : r.level === 'WARN' ? 'var(--yellow)' : 'var(--green)';
+      const bc = r.level === 'CRITICAL' ? 'badge-critical' : r.level === 'WARN' ? 'badge-warn' : 'badge-running';
+      return `<tr>
+        <td class="td-id">#${r.id}</td>
+        <td class="td-mono" style="color:var(--accent)">${r.eqId}</td>
+        <td class="td-mono" style="color:${lc}">${r.temp.toFixed(1)}</td>
+        <td class="td-mono" style="color:${lc}">${r.vib.toFixed(1)}</td>
+        <td><span class="eq-badge ${bc}" style="font-size:9px">${r.level}</span></td>
+        <td class="td-mono" style="color:var(--text3);font-size:10px">${r.recordedAt}</td>
+      </tr>`;
+    }).join('');
+  },
+
+  updateMetrics() {
+    document.getElementById('m-total').textContent    = State.totalCollected;
+    document.getElementById('m-db').textContent       = State.dbCount;
+    document.getElementById('m-queue').textContent    = State.bufferQueue.length;
+    document.getElementById('m-warn').textContent     = State.warnCount;
+    document.getElementById('m-crit').textContent     = State.critCount;
+    document.getElementById('round-num').textContent  = State.round;
+  },
+
+  setSystemStatus(running) {
+    document.getElementById('pulse-dot').classList.toggle('stopped', !running);
+    document.getElementById('sys-label').textContent = running ? '가동 중' : '정지됨';
+  },
+
+  // LIVE / SIM 모드 배지 업데이트
+  setMode(isLive) {
+    const badge = document.getElementById('mode-badge');
+    const label = document.getElementById('mode-label');
+    if (isLive) {
+      badge.textContent = 'LIVE';
+      badge.className = 'mode-badge mode-live';
+      if (label) label.textContent = 'LIVE';
+    } else {
+      badge.textContent = 'SIM';
+      badge.className = 'mode-badge mode-sim';
+      if (label) label.textContent = 'SIM · 이상률 20%';
+    }
+  },
+
+  // API /api/dashboard 응답 → State 갱신 → 화면 렌더
+  applyApiDashboard(data) {
+    const m = data.metrics || {};
+    State.totalCollected = m.totalRows   || State.totalCollected;
+    State.dbCount        = m.totalRows   || State.dbCount;
+    State.warnCount      = m.warnOpen    ?? State.warnCount;
+    State.critCount      = m.critOpen    ?? State.critCount;
+
+    (data.equipments || []).forEach(eq => {
+      const cfg = Config.EQUIPMENTS.find(e => e.eqId === eq.eqId);
+      if (cfg) cfg.status = eq.status;
+      State.eqLatest[eq.eqId] = { temp: eq.lastTemp || 0, vib: eq.lastVib || 0 };
+    });
+
+    State.logs = (data.logs || []).map(l => ({
+      eqId:  l.eqId,
+      level: l.level,
+      code:  l.code,
+      msg:   l.message,
+      time:  l.time,
+    }));
+
+    // sensor_data 테이블 행 — API 로그에서 역산
+    State.dbRows = (data.logs || []).slice(0, Config.MAX_ROWS).map(l => ({
+      id:         l.logId,
+      eqId:       l.eqId,
+      temp:       l.temp,
+      vib:        l.vib,
+      level:      l.level,
+      recordedAt: l.time,
+    }));
+
+    State.round++;
+    this.renderAll();
+  },
+
+  renderAll() {
+    this.renderEquipCards(); this.renderQueue();
+    this.renderLogs(); this.renderDbTable(); this.updateMetrics();
+  },
+};
+
+// ============================================================
+// Simulation — 수집 흐름 오케스트레이션 (tick / start / stop / reset / inject)
+// ============================================================
+const Simulation = {
+  tick() {
+    State.round++;
+    const t    = UI.now();
+    const snap = {};
+    const force = State.pendingAnomaly;
+    State.pendingAnomaly = false;
+
+    // STEP 1: 활성 설비 → 센서 데이터 생성 → 큐 적재
+    Config.EQUIPMENTS.forEach(eq => {
+      if (eq.status === 'STOPPED') return;
+      const d = DataEngine.generateSensor(eq, force && Math.random() > .5);
+      State.bufferQueue.push(d);
+      State.totalCollected++;
+      State.eqLatest[eq.eqId] = { temp: d.temp, vib: d.vib };
+      snap[eq.eqId] = d.temp;
+    });
+    UI.renderEquipCards(); UI.renderQueue(); UI.updateMetrics();
+
+    // STEP 2 (800ms 후): 큐 → DB 적재 시뮬레이션 + 이상 처리
+    setTimeout(() => {
+      const batch = [...State.bufferQueue];
+      State.bufferQueue = [];
+
+      batch.forEach(d => {
+        const row = { id: State.dataIdSeq++, eqId: d.eqId, temp: d.temp, vib: d.vib, level: d.level, recordedAt: UI.nowDT() };
+        State.dbRows.unshift(row);
+        if (State.dbRows.length > Config.MAX_ROWS) State.dbRows.pop();
+        State.dbCount++;
+
+        if (d.level !== 'NORMAL') {
+          const eq = Config.EQUIPMENTS.find(e => e.eqId === d.eqId);
+          State.logs.unshift({ eqId: d.eqId, level: d.level, code: DataEngine.errorCode(d.temp, d.vib), msg: DataEngine.errorMessage(eq.eqName, d.temp, d.vib), time: t });
+          if (State.logs.length > Config.MAX_LOGS) State.logs.pop();
+          if (d.level === 'CRITICAL') { State.critCount++; eq.status = 'ERROR'; }
+          else { State.warnCount++; }
+        }
+      });
+
+      // STEP 3: ERROR 설비 자동 복구 시뮬레이션
+      DataEngine.autoRecovery();
+      UI.renderAll();
+      ChartManager.push(t, snap);
+    }, 800);
+  },
+
+  start() {
+    if (State.simRunning) return;
+    State.simRunning = true;
+    UI.setSystemStatus(true);
+    State.simTimer = setInterval(() => this.tick(), Config.COLLECT_INTERVAL);
+  },
+
+  stop() {
+    State.simRunning = false;
+    clearInterval(State.simTimer);
+    UI.setSystemStatus(false);
+  },
+
+  inject() {
+    State.pendingAnomaly = true;
+    if (!State.simRunning) this.start();
+  },
+
+  reset() {
+    this.stop();
+    State.reset();
+    ChartManager.clear();
+    UI.renderAll();
+  },
+};
+
+// ============================================================
+// ApiClient — REST API 호출 (타임아웃·에러 처리 포함)
+// ============================================================
+const ApiClient = {
+  async _fetch(path) {
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), Config.API_TIMEOUT_MS);
+    try {
+      const res = await fetch(Config.API_BASE + path, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } finally {
+      clearTimeout(tid);
+    }
+  },
+
+  health()    { return this._fetch('/health');    },
+  dashboard() { return this._fetch('/dashboard'); },
+  chart()     { return this._fetch('/chart');     },
+};
+
+// ============================================================
+// PollingManager — LIVE / SIM 모드 전환 + 주기적 폴링
+// ============================================================
+const PollingManager = {
+  _pollTimer:   null,
+  _healthTimer: null,
+  _intervalMs:  2000,
+
+  // 외부에서 폴링 주기 변경 (드롭다운 onchange)
+  setInterval(ms) {
+    this._intervalMs = ms;
+    if (State.isLiveMode) {
+      this._stopPoll();
+      this._startPoll();
+    }
+  },
+
+  // 앱 시작 시 API 연결 시도, 결과에 따라 모드 결정
+  async init() {
+    try {
+      await ApiClient.health();
+      this._enterLive();
+    } catch (_) {
+      this._enterSim();
+    }
+  },
+
+  // ── LIVE 모드 진입 ─────────────────────────────────────────
+  _enterLive() {
+    if (State.isLiveMode) return;
+    State.isLiveMode = true;
+    Simulation.stop();              // SIM 루프 정지
+    clearInterval(this._healthTimer);
+    this._healthTimer = null;
+    UI.setMode(true);
+    UI.setSystemStatus(true);
+    this._startPoll();
+    console.info('[PollingManager] LIVE 모드 진입');
+  },
+
+  _startPoll() {
+    this._poll();                   // 즉시 1회 실행
+    this._pollTimer = setInterval(() => this._poll(), this._intervalMs);
+  },
+
+  _stopPoll() {
+    clearInterval(this._pollTimer);
+    this._pollTimer = null;
+  },
+
+  async _poll() {
+    try {
+      // dashboard + chart 를 병렬로 요청
+      const [dash, chart] = await Promise.all([
+        ApiClient.dashboard(),
+        ApiClient.chart(),
+      ]);
+      UI.applyApiDashboard(dash);
+      ChartManager.applyApiData(chart);
+    } catch (err) {
+      console.warn('[PollingManager] API 응답 실패:', err.message);
+      this._enterSim();             // 실패 시 SIM 모드로 자동 전환
+    }
+  },
+
+  // ── SIM 모드 진입 ──────────────────────────────────────────
+  _enterSim() {
+    if (!State.isLiveMode && State.simRunning) return;
+    State.isLiveMode = false;
+    this._stopPoll();
+    UI.setMode(false);
+    Simulation.start();
+    // 10초마다 API 복구 감지 → 복구되면 LIVE 모드로 자동 복귀
+    if (!this._healthTimer) {
+      this._healthTimer = setInterval(async () => {
+        try {
+          await ApiClient.health();
+          this._enterLive();
+        } catch (_) { /* 아직 오프라인 */ }
+      }, Config.HEALTH_CHECK_MS);
+    }
+    console.info('[PollingManager] SIM 모드 전환');
+  },
+};
+
+// ============================================================
+// 전역 버튼 핸들러 (HTML onclick 속성에서 호출)
+// ============================================================
+function startSim() {
+  if (State.isLiveMode) PollingManager._enterSim();
+  else Simulation.start();
+}
+function stopSim() {
+  if (State.isLiveMode) { PollingManager._stopPoll(); UI.setSystemStatus(false); }
+  else Simulation.stop();
+}
+function injectAnomaly() {
+  // LIVE 모드에서는 이상 주입 불가 (서버 측 데이터)
+  if (State.isLiveMode) { alert('LIVE 모드에서는 이상 주입을 사용할 수 없습니다.'); return; }
+  Simulation.inject();
+}
+function resetSim() {
+  PollingManager._stopPoll();
+  clearInterval(PollingManager._healthTimer);
+  PollingManager._healthTimer = null;
+  Simulation.reset();
+  State.isLiveMode = false;
+  UI.setMode(false);
+  UI.setSystemStatus(false);
 }
 
-function startSim(){if(simRunning)return;simRunning=true;document.getElementById('pulse-dot').classList.remove('stopped');document.getElementById('sys-label').textContent='가동 중';simTimer=setInterval(tick,COLLECT_INTERVAL);}
-function stopSim(){simRunning=false;clearInterval(simTimer);document.getElementById('pulse-dot').classList.add('stopped');document.getElementById('sys-label').textContent='정지됨';}
-function injectAnomaly(){pendingAnomaly=true;if(!simRunning)startSim();}
-function resetSim(){
-  stopSim();totalCollected=0;dbCount=0;warnCount=0;critCount=0;bufferQueue=[];logs=[];dbRows=[];round=0;dataIdSeq=1;
-  EQUIPMENTS.forEach(eq=>{eq.status='RUNNING';});EQUIPMENTS.forEach(e=>{eqLatest[e.eqId]={temp:e.baseTempMin+5,vib:e.baseVibMin+2};});
-  tempChart.data.labels=[];tempChart.data.datasets.forEach(ds=>ds.data=[]);tempChart.update();
-  renderEquipCards();renderQueue();renderLogs();renderDbTable();updateMetrics();document.getElementById('sys-label').textContent='정지됨';
-}
-setInterval(()=>{document.getElementById('sys-clock').textContent=new Date().toLocaleTimeString('ko-KR',{hour12:false});},1000);
-document.getElementById('sys-clock').textContent=new Date().toLocaleTimeString('ko-KR',{hour12:false});
-initChart();renderEquipCards();renderQueue();renderLogs();renderDbTable();updateMetrics();startSim();
+// ============================================================
+// 초기화
+// ============================================================
+setInterval(() => {
+  document.getElementById('sys-clock').textContent =
+    new Date().toLocaleTimeString('ko-KR', { hour12: false });
+}, 1000);
+document.getElementById('sys-clock').textContent =
+  new Date().toLocaleTimeString('ko-KR', { hour12: false });
+
+ChartManager.init();
+UI.renderAll();
+UI.setMode(false);
+
+// API 연결 시도 → 성공 시 LIVE, 실패 시 SIM 자동 시작
+PollingManager.init();
 </script>
 </body>
 </html>
